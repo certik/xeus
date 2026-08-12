@@ -50,6 +50,69 @@ async function getJson(url: string) {
   return data;
 }
 
+/**
+ * How long to wait for the service worker to take control of the page.
+ */
+const SERVICE_WORKER_CONTROL_TIMEOUT = 10000;
+
+/**
+ * Wait for the service worker to take control of this page.
+ *
+ * A page which is not cross-origin isolated has no SharedArrayBuffer, so the kernel
+ * worker performs its synchronous filesystem and stdin calls as synchronous requests
+ * answered by the service worker. A dedicated worker inherits the controller of the
+ * document which created it, as it was at the time of creation, and never gets one
+ * later. A kernel worker created before the service worker controls the page
+ * therefore has none of its requests intercepted, for its whole lifetime: the kernel
+ * hangs on its first filesystem call and the notebook stays at "Connecting" forever.
+ *
+ * @returns whether the service worker is now controlling the page.
+ */
+async function waitForServiceWorkerControl(
+  serviceWorkerManager?: IServiceWorkerManager
+): Promise<boolean> {
+  const { serviceWorker } = navigator;
+
+  if (!serviceWorkerManager || !serviceWorker) {
+    return false;
+  }
+
+  // registration is usually still in flight when the first kernel is requested,
+  // and rejects when there is no service worker to be had at all
+  try {
+    await serviceWorkerManager.ready;
+  } catch {
+    return false;
+  }
+
+  if (serviceWorker.controller) {
+    return true;
+  }
+
+  // the service worker claims its clients when it activates, so no reload is needed,
+  // but that can happen after the kernel is requested
+  const controlled = await new Promise<boolean>(resolve => {
+    function done(): void {
+      clearTimeout(timeout);
+      serviceWorker.removeEventListener('controllerchange', done);
+      resolve(serviceWorker.controller !== null);
+    }
+
+    const timeout = setTimeout(done, SERVICE_WORKER_CONTROL_TIMEOUT);
+    serviceWorker.addEventListener('controllerchange', done);
+  });
+
+  if (!controlled) {
+    console.warn(
+      `The service worker did not take control of this page within ${
+        SERVICE_WORKER_CONTROL_TIMEOUT / 1000
+      }s`
+    );
+  }
+
+  return controlled;
+}
+
 const kernelPlugin: JupyterFrontEndPlugin<void> = {
   id: '@jupyterlite/xeus-kernel:register',
   autoStart: true,
@@ -109,7 +172,14 @@ const kernelPlugin: JupyterFrontEndPlugin<void> = {
             kernelspec.name = kernelspec.name.slice(0, index);
           }
 
-          const mountDrive = !!(serviceWorker?.enabled || crossOriginIsolated);
+          // The drive is reached through SharedArrayBuffer when the page is
+          // cross-origin isolated, and through the service worker otherwise — in
+          // which case the kernel worker must not be created before the service
+          // worker controls this page. See waitForServiceWorkerControl.
+          const mountDrive =
+            crossOriginIsolated ||
+            (await waitForServiceWorkerControl(serviceWorker));
+
           if (mountDrive) {
             console.info(
               `${kernelspec.name} contents will be synced with Jupyter Contents`
