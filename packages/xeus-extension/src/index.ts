@@ -135,6 +135,13 @@ const kernelPlugin: JupyterFrontEndPlugin<void> = {
     }
     const contentsManager = app.serviceManager.contents;
 
+    // Wait for the service worker here, before any kernel can be requested, rather
+    // than when one is created: a kernel whose creation blocks for more than about
+    // a second loses its session, and the cells of its notebook then never run.
+    if (!crossOriginIsolated) {
+      await waitForServiceWorkerControl(serviceWorker);
+    }
+
     const kernelNames = kernelList.map(item => item.kernel);
     const duplicateNames = kernelNames.filter(
       (item, index) => kernelNames.indexOf(item) !== index
@@ -173,12 +180,12 @@ const kernelPlugin: JupyterFrontEndPlugin<void> = {
           }
 
           // The drive is reached through SharedArrayBuffer when the page is
-          // cross-origin isolated, and through the service worker otherwise — in
-          // which case the kernel worker must not be created before the service
-          // worker controls this page. See waitForServiceWorkerControl.
+          // cross-origin isolated, and through the service worker otherwise. Mount
+          // it only if one of the two is actually available right now: mounting it
+          // on a page the service worker does not control leaves every filesystem
+          // call of this kernel unanswered. This must not block, see above.
           const mountDrive =
-            crossOriginIsolated ||
-            (await waitForServiceWorkerControl(serviceWorker));
+            crossOriginIsolated || !!navigator.serviceWorker?.controller;
 
           if (mountDrive) {
             console.info(
