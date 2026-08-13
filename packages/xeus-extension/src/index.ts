@@ -73,6 +73,7 @@ async function waitForServiceWorkerControl(
 ): Promise<boolean> {
   const { serviceWorker } = navigator;
 
+  // People can disable the service worker in their JupyterLite deployment.
   if (!serviceWorkerManager || !serviceWorker) {
     return false;
   }
@@ -82,6 +83,10 @@ async function waitForServiceWorkerControl(
   try {
     await serviceWorkerManager.ready;
   } catch {
+    return false;
+  }
+
+  if (!serviceWorkerManager.enabled) {
     return false;
   }
 
@@ -100,6 +105,10 @@ async function waitForServiceWorkerControl(
 
     const timeout = setTimeout(done, SERVICE_WORKER_CONTROL_TIMEOUT);
     serviceWorker.addEventListener('controllerchange', done);
+    // controllerchange may have fired between the check above and the listener
+    if (serviceWorker.controller) {
+      done();
+    }
   });
 
   if (!controlled) {
@@ -185,7 +194,8 @@ const kernelPlugin: JupyterFrontEndPlugin<void> = {
           // on a page the service worker does not control leaves every filesystem
           // call of this kernel unanswered. This must not block, see above.
           const mountDrive =
-            crossOriginIsolated || !!navigator.serviceWorker?.controller;
+            crossOriginIsolated ||
+            !!(serviceWorker?.enabled && navigator.serviceWorker?.controller);
 
           if (mountDrive) {
             console.info(
