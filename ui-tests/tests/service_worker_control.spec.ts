@@ -32,11 +32,6 @@ const RECORD_WORKER_CREATION = `
  */
 const SERVICE_WORKER_DELAY = 5000;
 
-/**
- * The kernel worker is bundled as a chunk whose name contains comlink_worker.
- */
-const KERNEL_WORKER = 'comlink';
-
 test.describe('Service Worker control', () => {
   // with SharedArrayBuffer the kernel worker talks to the main thread directly and
   // does not need the service worker at all
@@ -59,29 +54,31 @@ test.describe('Service Worker control', () => {
 
     await page.goto('lab/index.html');
 
+    const workersBeforeKernel: number = await page.evaluate(
+      () => ((globalThis as any)._workers ?? []).length
+    );
+
     // start a kernel as soon as the launcher offers one
     await page
       .locator('[title="JavaScript (xjavascript)"]')
       .first()
       .click({ timeout: 60000 });
 
-    await page.waitForFunction(
-      workerUrl =>
-        (globalThis as any)._workers.some((worker: any) =>
-          worker.url.includes(workerUrl)
-        ),
-      KERNEL_WORKER,
-      { timeout: 60000 }
-    );
+    // The kernel worker URL is a bundler-generated path and does not reliably
+    // contain a stable substring such as "comlink". Wait for the kernel to
+    // become idle, then inspect every Worker created after the click.
+    await page
+      .locator('#jp-main-statusbar')
+      .getByText('Idle')
+      .waitFor({ timeout: 60000 });
 
     const workers: { url: string; controlled: boolean }[] = await page.evaluate(
-      () => (globalThis as any)._workers
+      () => (globalThis as any)._workers ?? []
     );
 
-    expect(
-      workers.filter(
-        worker => worker.url.includes(KERNEL_WORKER) && !worker.controlled
-      )
-    ).toEqual([]);
+    const kernelWorkers = workers.slice(workersBeforeKernel);
+
+    expect(kernelWorkers.length).toBeGreaterThan(0);
+    expect(kernelWorkers.filter(worker => !worker.controlled)).toEqual([]);
   });
 });
